@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual Environment
+venv/
+.env/
+
+# Environment variables
+.env
+*.env
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# CUPS / temp files
+*.pdf
+*.tmp
+
+# Uploads / user files (VERY IMPORTANT for your bot)
+uploads/
+downloads/
+
+# Redis dump
+dump.rdb
+
+# SQLite (if any)
+*.db
+
+# Secrets
+config.json

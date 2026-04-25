@@ -1,7 +1,10 @@
 import os
 import uuid
 import asyncio
+<<<<<<< HEAD
 import cups
+=======
+>>>>>>> a988021 (Added more project files)
 from dotenv import load_dotenv
 
 from telegram import Update
@@ -23,8 +26,13 @@ from Assets.filehandle import (
     calculate_cost
 )
 
+<<<<<<< HEAD
 from pipeline.payment import create_payment_link
 from pipeline.queue_system import process_print_job
+=======
+from Assets.payment import create_payment_link
+from Assets.queue_system import process_print_job  # 🔥 IMPORTANT
+>>>>>>> a988021 (Added more project files)
 
 # ================= STATES =================
 ASK_PAGES, ASK_COPIES, ASK_COLOR = range(3)
@@ -86,6 +94,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ Scanning..."
     )
 
+<<<<<<< HEAD
+=======
+    # ===== SCAN =====
+>>>>>>> a988021 (Added more project files)
     is_safe, _ = await asyncio.to_thread(scan_file, file_path)
 
     if not is_safe:
@@ -94,6 +106,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.edit_text("✅ Safe file\n⚙️ Converting...")
 
+<<<<<<< HEAD
+=======
+    # ===== CONVERT =====
+>>>>>>> a988021 (Added more project files)
     pdf_path = await asyncio.to_thread(convert_to_pdf, file_path)
 
     if not pdf_path:
@@ -126,7 +142,11 @@ async def ask_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if start < 1 or end > total or start > end:
                 raise ValueError
         except:
+<<<<<<< HEAD
             await update.message.reply_text("❌ Invalid format")
+=======
+            await update.message.reply_text("❌ Invalid format. Use 1-5 or all")
+>>>>>>> a988021 (Added more project files)
             return ASK_PAGES
 
     context.user_data["start"] = start
@@ -142,7 +162,11 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if copies <= 0:
             raise ValueError
     except:
+<<<<<<< HEAD
         await update.message.reply_text("❌ Enter valid number")
+=======
+        await update.message.reply_text("❌ Enter valid number (>0)")
+>>>>>>> a988021 (Added more project files)
         return ASK_COPIES
 
     context.user_data["copies"] = copies
@@ -150,7 +174,11 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎨 Type color or bw:")
     return ASK_COLOR
 
+<<<<<<< HEAD
 # ================= PAYMENT =================
+=======
+# ================= PAYMENT STEP =================
+>>>>>>> a988021 (Added more project files)
 async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
@@ -188,7 +216,11 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
+<<<<<<< HEAD
 # ================= FINAL STEP =================
+=======
+# ================= CHECK PAYMENT + QUEUE SYSTEM =================
+>>>>>>> a988021 (Added more project files)
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text.lower() != "paid":
         return
@@ -199,6 +231,10 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⏳ Processing print job...")
 
+<<<<<<< HEAD
+=======
+    # 🔥 QUEUE SYSTEM INTEGRATION (YOUR FILE)
+>>>>>>> a988021 (Added more project files)
     result = await process_print_job(context)
 
     print_id = result["print_id"]
@@ -214,13 +250,17 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🖨️ Printing started..."
     )
 
+<<<<<<< HEAD
     # Send file to user
+=======
+>>>>>>> a988021 (Added more project files)
     with open(pdf, "rb") as f:
         await update.message.reply_document(
             document=f,
             filename="final_print.pdf"
         )
 
+<<<<<<< HEAD
     # 🔥 PRINT USING CUPS
     printed = await asyncio.to_thread(send_to_printer, pdf)
 
@@ -229,6 +269,8 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Printer error")
 
+=======
+>>>>>>> a988021 (Added more project files)
 # ================= FALLBACK =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📎 Send a file to start")
@@ -259,5 +301,9 @@ app.add_handler(conv_handler)
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_payment))
 app.add_handler(MessageHandler(filters.TEXT, handle_text))
 
+<<<<<<< HEAD
 print("🚀 PrintX Bot Running with CUPS + Queue...")
+=======
+print("🚀 PrintX Bot Running with Queue System...")
+>>>>>>> a988021 (Added more project files)
 app.run_polling()

@@ -1,5 +1,7 @@
 import os
 import uuid
+import asyncio
+import cups
 from dotenv import load_dotenv
 
 from telegram import Update
@@ -11,6 +13,7 @@ from telegram.ext import (
     filters,
     ConversationHandler
 )
+from telegram.request import HTTPXRequest
 
 from Assets.clamav import scan_file
 from Assets.filehandle import (
@@ -19,6 +22,9 @@ from Assets.filehandle import (
     trim_pdf,
     calculate_cost
 )
+
+from pipeline.payment import create_payment_link
+from pipeline.queue_system import process_print_job
 
 # ================= STATES =================
 ASK_PAGES, ASK_COPIES, ASK_COLOR = range(3)
@@ -30,13 +36,33 @@ TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN not found")
 
+# ================= CUPS PRINT FUNCTION =================
+def send_to_printer(file_path):
+    try:
+        conn = cups.Connection()
+        printers = conn.getPrinters()
+
+        if not printers:
+            print("❌ No printers found")
+            return False
+
+        printer_name = list(printers.keys())[0]
+
+        conn.printFile(printer_name, file_path, "PrintX Job", {})
+
+        print(f"✅ Sent to printer: {printer_name}")
+        return True
+
+    except Exception as e:
+        print("❌ CUPS Error:", e)
+        return False
+
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🌟 *Welcome to PrintX*\n\n"
+        "🌟 Welcome to PrintX\n\n"
         "🖨️ Smart & Secure Printing\n\n"
-        "📤 Send a file to begin",
-        parse_mode="Markdown"
+        "📤 Send a file to begin"
     )
 
 # ================= HANDLE FILE =================
@@ -44,72 +70,45 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
 
     os.makedirs("downloads", exist_ok=True)
-
     file_path = f"./downloads/{uuid.uuid4()}_{document.file_name}"
 
     msg = await update.message.reply_text("📥 Receiving file...")
 
-    file = await document.get_file()
+    file = await document.get_file(read_timeout=60, write_timeout=60)
     await file.download_to_drive(file_path)
 
-    # ===== FILE INFO =====
     file_size = document.file_size / (1024 * 1024)
 
     await msg.edit_text(
-        f"📄 *File Received*\n\n"
-        f"📌 Name: `{document.file_name}`\n"
-        f"📦 Size: `{file_size:.2f} MB`\n\n"
-        f"🛡️ Starting security scan...",
-        parse_mode="Markdown"
+        f"📄 File Received\n\n"
+        f"📌 Name: {document.file_name}\n"
+        f"📦 Size: {file_size:.2f} MB\n\n"
+        f"🛡️ Scanning..."
     )
 
-    # ===== SCAN =====
-    is_safe, stats = scan_file(file_path)
+    is_safe, _ = await asyncio.to_thread(scan_file, file_path)
 
     if not is_safe:
-        await msg.edit_text(
-            f"❌ *Threat Detected*\n\n"
-            f"🛡️ Engine: {stats.get('engine')}\n"
-            f"⏱️ Scan Time: {stats.get('scan_time')} sec\n\n"
-            f"🚫 File rejected for safety.",
-            parse_mode="Markdown"
-        )
-
-        try:
-            os.remove(file_path)
-        except:
-            pass
-
+        await msg.edit_text("❌ Threat detected. File rejected.")
         return ConversationHandler.END
 
-    # ===== SAFE FILE =====
-    await msg.edit_text(
-        f"✅ *Security Check Passed*\n\n"
-        f"🛡️ Engine: {stats.get('engine')}\n"
-        f"⏱️ Scan Time: {stats.get('scan_time')} sec\n\n"
-        f"⚙️ Converting to PDF...",
-        parse_mode="Markdown"
-    )
+    await msg.edit_text("✅ Safe file\n⚙️ Converting...")
 
-    # ===== CONVERT =====
-    pdf_path = convert_to_pdf(file_path)
+    pdf_path = await asyncio.to_thread(convert_to_pdf, file_path)
 
     if not pdf_path:
-        await msg.edit_text("❌ Unsupported file format.")
+        await msg.edit_text("❌ Unsupported format.")
         return ConversationHandler.END
 
     pages = get_page_count(pdf_path)
 
-    # ===== STORE DATA =====
     context.user_data["pdf_path"] = pdf_path
     context.user_data["total_pages"] = pages
 
-    # ===== NEXT STEP =====
     await msg.edit_text(
-        f"📄 *File Ready*\n\n"
-        f"📑 Total Pages: `{pages}`\n\n"
-        f"✂️ Enter page range (e.g. `1-5` or `all`):",
-        parse_mode="Markdown"
+        f"📄 File Ready\n\n"
+        f"📑 Pages: {pages}\n\n"
+        f"✂️ Enter range (example: 1-5 or all):"
     )
 
     return ASK_PAGES
@@ -127,10 +126,7 @@ async def ask_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if start < 1 or end > total or start > end:
                 raise ValueError
         except:
-            await update.message.reply_text(
-                f"❌ Invalid format.\nUse `1-5` or `all` (Max pages: {total})",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("❌ Invalid format")
             return ASK_PAGES
 
     context.user_data["start"] = start
@@ -146,58 +142,106 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if copies <= 0:
             raise ValueError
     except:
-        await update.message.reply_text("❌ Enter a valid number (>0)")
+        await update.message.reply_text("❌ Enter valid number")
         return ASK_COPIES
 
     context.user_data["copies"] = copies
 
-    await update.message.reply_text("🎨 Type `color` or `bw`:", parse_mode="Markdown")
+    await update.message.reply_text("🎨 Type color or bw:")
     return ASK_COLOR
 
-# ================= ASK COLOR + FINAL =================
+# ================= PAYMENT =================
 async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
     if text not in ["color", "bw"]:
-        await update.message.reply_text("❌ Type only `color` or `bw`", parse_mode="Markdown")
+        await update.message.reply_text("❌ Type only color or bw")
         return ASK_COLOR
 
-    color = True if text == "color" else False
+    color = text == "color"
 
     pdf_path = context.user_data["pdf_path"]
     start = context.user_data["start"]
     end = context.user_data["end"]
     copies = context.user_data["copies"]
 
-    # ===== TRIM PDF =====
-    final_pdf = trim_pdf(pdf_path, start, end)
+    final_pdf = await asyncio.to_thread(trim_pdf, pdf_path, start, end)
 
     pages = end - start + 1
     cost = calculate_cost(pages, copies, color)
 
-    # ===== SEND FINAL FILE =====
-    with open(final_pdf, "rb") as f:
-        await update.message.reply_document(
-            document=f,
-            filename="final_print.pdf",
-            caption=(
-                f"✅ *Ready to Print*\n\n"
-                f"📑 Pages: `{pages}`\n"
-                f"📄 Copies: `{copies}`\n"
-                f"{'🌈 Color' if color else '🖤 B/W'}\n"
-                f"💰 Cost: `₹{cost}`"
-            ),
-            parse_mode="Markdown"
-        )
+    payment_link = create_payment_link(cost)
+
+    if not payment_link:
+        await update.message.reply_text("❌ Payment failed")
+        return ConversationHandler.END
+
+    context.user_data["final_pdf"] = final_pdf
+
+    await update.message.reply_text(
+        f"💳 <b>Payment Required</b>\n\n"
+        f"💰 Amount: ₹{cost}\n\n"
+        f"👉 <a href='{payment_link}'>Pay Now</a>\n\n"
+        f"After payment type <b>paid</b>",
+        parse_mode="HTML"
+    )
 
     return ConversationHandler.END
 
-# ================= TEXT FALLBACK =================
+# ================= FINAL STEP =================
+async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text.lower() != "paid":
+        return
+
+    if not context.user_data.get("final_pdf"):
+        await update.message.reply_text("❌ No pending order")
+        return
+
+    await update.message.reply_text("⏳ Processing print job...")
+
+    result = await process_print_job(context)
+
+    print_id = result["print_id"]
+    position = result["position"]
+    wait_time = result["wait_time"]
+    pdf = result["pdf"]
+
+    await update.message.reply_text(
+        f"✅ Payment confirmed!\n\n"
+        f"🆔 Print ID: {print_id}\n"
+        f"📍 Queue Position: {position}\n"
+        f"⏳ Wait Time: {wait_time} sec\n\n"
+        f"🖨️ Printing started..."
+    )
+
+    # Send file to user
+    with open(pdf, "rb") as f:
+        await update.message.reply_document(
+            document=f,
+            filename="final_print.pdf"
+        )
+
+    # 🔥 PRINT USING CUPS
+    printed = await asyncio.to_thread(send_to_printer, pdf)
+
+    if printed:
+        await update.message.reply_text("🖨️ Sent to printer!")
+    else:
+        await update.message.reply_text("❌ Printer error")
+
+# ================= FALLBACK =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📎 Please send a valid file")
+    await update.message.reply_text("📎 Send a file to start")
 
 # ================= MAIN =================
-app = ApplicationBuilder().token(TOKEN).build()
+request = HTTPXRequest(
+    connect_timeout=60,
+    read_timeout=60,
+    write_timeout=60,
+    pool_timeout=60
+)
+
+app = ApplicationBuilder().token(TOKEN).request(request).build()
 
 conv_handler = ConversationHandler(
     entry_points=[MessageHandler(filters.Document.ALL, handle_file)],
@@ -211,7 +255,9 @@ conv_handler = ConversationHandler(
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(conv_handler)
+
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_payment))
 app.add_handler(MessageHandler(filters.TEXT, handle_text))
 
-print("🚀 PrintX Bot Running (Full Smart Flow)...")
+print("🚀 PrintX Bot Running with CUPS + Queue...")
 app.run_polling()

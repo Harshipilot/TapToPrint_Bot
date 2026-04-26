@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Keep your body styles if you like, but Tailwind needs the above */
+body {
+  margin: 0;
+  font-family: sans-serif;
+}

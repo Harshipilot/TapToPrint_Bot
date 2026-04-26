@@ -41,12 +41,12 @@ case "$(uname)" in
     CYGWIN*|MSYS*|MINGW*)
         # transform D:\path\to\venv to /d/path/to/venv on MSYS and MINGW
         # and to /cygdrive/d/path/to/venv on Cygwin
-        VIRTUAL_ENV=$(cygpath /home/kali/TapToPrint_Bot/venv)
+        VIRTUAL_ENV=$(cygpath /home/kali/PRINTBOT/venv)
         export VIRTUAL_ENV
         ;;
     *)
         # use the path as-is
-        export VIRTUAL_ENV=/home/kali/TapToPrint_Bot/venv
+        export VIRTUAL_ENV=/home/kali/PRINTBOT/venv
         ;;
 esac
 

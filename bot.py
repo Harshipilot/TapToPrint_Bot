@@ -1,11 +1,14 @@
 import os
 import uuid
 import asyncio
-<<<<<<< HEAD
+import subprocess
+import threading
 import cups
-=======
->>>>>>> a988021 (Added more project files)
 from dotenv import load_dotenv
+from Assets.database import init_db
+import zipfile
+
+init_db()
 
 from telegram import Update
 from telegram.ext import (
@@ -26,13 +29,10 @@ from Assets.filehandle import (
     calculate_cost
 )
 
-<<<<<<< HEAD
-from pipeline.payment import create_payment_link
-from pipeline.queue_system import process_print_job
-=======
+from Assets.database import record_payment, get_job_file, update_job_status, update_printer_id
 from Assets.payment import create_payment_link
-from Assets.queue_system import process_print_job  # 🔥 IMPORTANT
->>>>>>> a988021 (Added more project files)
+from Assets.queue_system import process_print_job
+from Assets.location_service import find_nearest_locations, get_location_message, reverse_geocode_location
 
 # ================= STATES =================
 ASK_PAGES, ASK_COPIES, ASK_COLOR = range(3)
@@ -46,24 +46,36 @@ if not TOKEN:
 
 # ================= CUPS PRINT FUNCTION =================
 def send_to_printer(file_path):
-    try:
-        conn = cups.Connection()
-        printers = conn.getPrinters()
-
-        if not printers:
-            print("❌ No printers found")
+    def print_job():
+        try:
+            abs_path = os.path.abspath(file_path)
+            if not os.path.exists(abs_path):
+                print(f"❌ File not found: {abs_path}")
+                return False
+            print(f"📄 Printing file: {abs_path}")
+            conn = cups.Connection()
+            printers = conn.getPrinters()
+            if not printers:
+                print("❌ No printers found")
+                return False
+            printer_name = list(printers.keys())[0]
+            conn.printFile(printer_name, abs_path, "PrintX Job", {})
+            print(f"✅ Sent to printer: {printer_name}")
+            return True
+        except Exception as e:
+            print("❌ CUPS Error:", e)
             return False
 
-        printer_name = list(printers.keys())[0]
-
-        conn.printFile(printer_name, file_path, "PrintX Job", {})
-
-        print(f"✅ Sent to printer: {printer_name}")
-        return True
-
-    except Exception as e:
-        print("❌ CUPS Error:", e)
+    result = [None]
+    def wrapper():
+        result[0] = print_job()
+    t = threading.Thread(target=wrapper)
+    t.start()
+    t.join(30)  # 30 seconds timeout
+    if t.is_alive():
+        print("❌ Print timeout")
         return False
+    return result[0] if result[0] is not None else False
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -80,6 +92,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.makedirs("downloads", exist_ok=True)
     file_path = f"./downloads/{uuid.uuid4()}_{document.file_name}"
 
+    context.user_data["file_name"] = document.file_name
+
     msg = await update.message.reply_text("📥 Receiving file...")
 
     file = await document.get_file(read_timeout=60, write_timeout=60)
@@ -94,23 +108,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🛡️ Scanning..."
     )
 
-<<<<<<< HEAD
-=======
-    # ===== SCAN =====
->>>>>>> a988021 (Added more project files)
-    is_safe, _ = await asyncio.to_thread(scan_file, file_path)
+    # Scan file
+    is_safe, scan_stats = await asyncio.to_thread(scan_file, file_path)
 
     if not is_safe:
         await msg.edit_text("❌ Threat detected. File rejected.")
         return ConversationHandler.END
 
-    await msg.edit_text("✅ Safe file\n⚙️ Converting...")
+    await msg.edit_text(
+        f"✅ Safe (Scan time: {scan_stats['scan_time']}s)\n⚙️ Converting..."
+    )
 
-<<<<<<< HEAD
-=======
-    # ===== CONVERT =====
->>>>>>> a988021 (Added more project files)
-    pdf_path = await asyncio.to_thread(convert_to_pdf, file_path)
+    pdf_path = await asyncio.to_thread(
+        convert_to_pdf,
+        file_path,
+        context.user_data.get("print_id")
+    )
 
     if not pdf_path:
         await msg.edit_text("❌ Unsupported format.")
@@ -142,11 +155,7 @@ async def ask_pages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if start < 1 or end > total or start > end:
                 raise ValueError
         except:
-<<<<<<< HEAD
-            await update.message.reply_text("❌ Invalid format")
-=======
             await update.message.reply_text("❌ Invalid format. Use 1-5 or all")
->>>>>>> a988021 (Added more project files)
             return ASK_PAGES
 
     context.user_data["start"] = start
@@ -162,11 +171,7 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if copies <= 0:
             raise ValueError
     except:
-<<<<<<< HEAD
-        await update.message.reply_text("❌ Enter valid number")
-=======
         await update.message.reply_text("❌ Enter valid number (>0)")
->>>>>>> a988021 (Added more project files)
         return ASK_COPIES
 
     context.user_data["copies"] = copies
@@ -174,11 +179,7 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎨 Type color or bw:")
     return ASK_COLOR
 
-<<<<<<< HEAD
-# ================= PAYMENT =================
-=======
 # ================= PAYMENT STEP =================
->>>>>>> a988021 (Added more project files)
 async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
@@ -198,7 +199,18 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pages = end - start + 1
     cost = calculate_cost(pages, copies, color)
 
-    payment_link = create_payment_link(cost)
+    context.user_data["cost"] = cost
+
+    # Generate print ID before payment
+    print_id = str(uuid.uuid4())[:8]
+    context.user_data["print_id"] = print_id
+
+    payment_link = create_payment_link(
+        amount=cost,
+        job_id=print_id,
+        user_id=update.message.from_user.id,
+        user_name=update.message.from_user.full_name
+    )
 
     if not payment_link:
         await update.message.reply_text("❌ Payment failed")
@@ -208,6 +220,7 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"💳 <b>Payment Required</b>\n\n"
+        f"🆔 Job ID: {print_id}\n"
         f"💰 Amount: ₹{cost}\n\n"
         f"👉 <a href='{payment_link}'>Pay Now</a>\n\n"
         f"After payment type <b>paid</b>",
@@ -216,11 +229,7 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-<<<<<<< HEAD
-# ================= FINAL STEP =================
-=======
 # ================= CHECK PAYMENT + QUEUE SYSTEM =================
->>>>>>> a988021 (Added more project files)
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text.lower() != "paid":
         return
@@ -231,49 +240,127 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("⏳ Processing print job...")
 
-<<<<<<< HEAD
-=======
-    # 🔥 QUEUE SYSTEM INTEGRATION (YOUR FILE)
->>>>>>> a988021 (Added more project files)
-    result = await process_print_job(context)
+    result = await process_print_job(context, update)
 
     print_id = result["print_id"]
+    record_payment(print_id, update.message.from_user.id, result["amount"], "manual_paid")
+
     position = result["position"]
     wait_time = result["wait_time"]
     pdf = result["pdf"]
+
+    context.user_data["print_id"] = print_id
+    context.user_data["pdf"] = pdf
 
     await update.message.reply_text(
         f"✅ Payment confirmed!\n\n"
         f"🆔 Print ID: {print_id}\n"
         f"📍 Queue Position: {position}\n"
         f"⏳ Wait Time: {wait_time} sec\n\n"
-        f"🖨️ Printing started..."
+        f"📍 Please share your location to select the nearest print shop."
     )
 
-<<<<<<< HEAD
-    # Send file to user
-=======
->>>>>>> a988021 (Added more project files)
-    with open(pdf, "rb") as f:
-        await update.message.reply_document(
-            document=f,
-            filename="final_print.pdf"
-        )
+    context.user_data["awaiting_location"] = True
 
-<<<<<<< HEAD
-    # 🔥 PRINT USING CUPS
-    printed = await asyncio.to_thread(send_to_printer, pdf)
+# ================= HANDLE LOCATION =================
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_location"):
+        return
 
-    if printed:
-        await update.message.reply_text("🖨️ Sent to printer!")
-    else:
-        await update.message.reply_text("❌ Printer error")
+    location = update.message.location
+    if not location:
+        await update.message.reply_text("❌ Please share your location.")
+        return
 
-=======
->>>>>>> a988021 (Added more project files)
+    user_lat = location.latitude
+    user_lon = location.longitude
+
+    nearest_locations, fallback = find_nearest_locations(user_lat, user_lon, top_n=4)
+    user_address = reverse_geocode_location(user_lat, user_lon)
+    message = get_location_message(nearest_locations, user_address=user_address, fallback=fallback)
+
+    await update.message.reply_text(message + "\n\nReply with the number (1-4) to select a shop.", parse_mode="HTML")
+    context.user_data["awaiting_location"] = False
+    context.user_data["awaiting_shop"] = True
+    context.user_data["locations"] = nearest_locations
+
+# ================= HANDLE SHOP SELECTION =================
+async def handle_shop_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    try:
+        choice = int(text)
+        locations = context.user_data.get("locations", [])
+        if 1 <= choice <= len(locations):
+            selected_distance, selected_shop = locations[choice-1]
+            job_id = context.user_data.get("print_id")
+            pdf = context.user_data.get("pdf")
+            
+            # Update printer_id
+            update_printer_id(job_id, f"PRINTER_{choice}")
+            
+            # Send to printer
+            printed = await asyncio.to_thread(send_to_printer, pdf)
+            
+            if printed:
+                update_job_status(job_id, "COMPLETED")
+                await update.message.reply_text(f"✅ Print job sent to {selected_shop['name']} (Option {choice})!\n\nCollect your prints from there.")
+            else:
+                await update.message.reply_text("❌ Printer error")
+            
+            context.user_data["awaiting_shop"] = False
+        else:
+            await update.message.reply_text("❌ Invalid choice. Please select a number from 1 to 4.")
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid number.")
+
 # ================= FALLBACK =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("awaiting_shop"):
+        await handle_shop_selection(update, context)
+        return
     await update.message.reply_text("📎 Send a file to start")
+
+# ================= EXPORT DATA =================
+async def export_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from Assets.database import export_all_data
+
+    export_all_data()
+
+    zip_path = 'printbot_export.zip'
+
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for file in ['exports/print_jobs.csv', 'exports/payments.csv', 'exports/printers.csv']:
+            if os.path.exists(file):
+                zipf.write(file, os.path.basename(file))
+
+    with open(zip_path, 'rb') as f:
+        await update.message.reply_document(document=f, filename='printbot_export.zip')
+
+    # Clean up
+    os.remove(zip_path)
+    for file in ['exports/print_jobs.csv', 'exports/payments.csv', 'exports/printers.csv']:
+        if os.path.exists(file):
+            os.remove(file)
+    os.rmdir('exports')
+
+# ================= RETRIEVE FILE =================
+async def retrieve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /retrieve <job_id>")
+        return
+
+    job_id = context.args[0]
+    user_id = update.message.from_user.id
+
+    file_path = get_job_file(job_id, user_id)
+    if not file_path or not os.path.exists(file_path):
+        await update.message.reply_text("❌ File not found or access denied.")
+        return
+
+    with open(file_path, "rb") as f:
+        await update.message.reply_document(document=f, filename=f"{job_id}.pdf")
+
+    await update.message.reply_text("✅ File retrieved!")
 
 # ================= MAIN =================
 request = HTTPXRequest(
@@ -297,13 +384,11 @@ conv_handler = ConversationHandler(
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(conv_handler)
-
+app.add_handler(CommandHandler("export", export_data))
+app.add_handler(CommandHandler("retrieve", retrieve))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_payment))
+app.add_handler(MessageHandler(filters.LOCATION, handle_location))
 app.add_handler(MessageHandler(filters.TEXT, handle_text))
 
-<<<<<<< HEAD
 print("🚀 PrintX Bot Running with CUPS + Queue...")
-=======
-print("🚀 PrintX Bot Running with Queue System...")
->>>>>>> a988021 (Added more project files)
 app.run_polling()

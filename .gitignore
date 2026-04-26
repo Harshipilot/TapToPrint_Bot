@@ -1,4 +1,6 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.pyc
 *.pyo
@@ -11,30 +13,52 @@ venv/
 .env
 *.env
 
+# =========================
 # Logs
+# =========================
 *.log
 
+# =========================
 # OS files
+# =========================
 .DS_Store
 Thumbs.db
 
-# IDE
+# =========================
+# IDE settings
+# =========================
 .vscode/
 .idea/
 
-# CUPS / temp files
-*.pdf
+# =========================
+# Temp / Generated files
+# =========================
 *.tmp
 
-# Uploads / user files (VERY IMPORTANT for your bot)
+# Generated PDFs (optional)
+*.pdf
+
+# Uploads / downloads
 uploads/
 downloads/
 
 # Redis dump
 dump.rdb
 
-# SQLite (if any)
+# SQLite
 *.db
 
 # Secrets
 config.json
+
+# =========================
+# React Admin Panel
+# =========================
+print-admin/node_modules/
+print-admin/build/
+print-admin/.env
+
+# React logs
+print-admin/npm-debug.log*
+print-admin/yarn-debug.log*
+print-admin/yarn-error.log*

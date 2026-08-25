@@ -32,10 +32,10 @@ from Assets.filehandle import (
 from Assets.database import record_payment, get_job_file, update_job_status, update_printer_id
 from Assets.payment import create_payment_link
 from Assets.queue_system import process_print_job
-from Assets.location_service import find_nearest_locations, get_location_message, reverse_geocode_location
+from Assets.location_service import find_nearest_printer
 
 # ================= STATES =================
-ASK_PAGES, ASK_COPIES, ASK_COLOR = range(3)
+ASK_PAGES, ASK_COPIES, ASK_COLOR, ASK_LOCATION, ASK_SHOP, ASK_PAYMENT = range(6)
 
 # ================= LOAD ENV =================
 load_dotenv()
@@ -179,7 +179,7 @@ async def ask_copies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎨 Type color or bw:")
     return ASK_COLOR
 
-# ================= PAYMENT STEP =================
+# ================= ASK COLOR - NOW ASKS FOR LOCATION =================
 async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
@@ -200,6 +200,46 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cost = calculate_cost(pages, copies, color)
 
     context.user_data["cost"] = cost
+    context.user_data["color"] = color
+    context.user_data["final_pdf"] = final_pdf
+    context.user_data["pages"] = pages
+
+    await update.message.reply_text("📍 Please share your location to select the nearest print shop.")
+    return ASK_LOCATION
+
+# ================= ASK LOCATION =================
+async def ask_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    location = update.message.location
+    if not location:
+        await update.message.reply_text("❌ Please share your location.")
+        return ASK_LOCATION
+
+    user_lat = float(location.latitude)
+    user_lon = float(location.longitude)
+
+    nearest_printer = find_nearest_printer(user_lat, user_lon)
+    if not nearest_printer:
+        await update.message.reply_text(
+            "❌ No subscribed printer is currently available. Please try again later."
+        )
+        return ConversationHandler.END
+
+    context.user_data["selected_printer"] = nearest_printer
+    context.user_data["selected_shop"] = {
+        "name": nearest_printer["printer_name"],
+        "address": f"{nearest_printer['printer_name']} ({nearest_printer['printer_id']})"
+    }
+    context.user_data["selected_choice"] = nearest_printer["printer_id"]
+
+    await update.message.reply_text(
+        "📍 Location received!\n\n"
+        f"🖨️ Nearest printer: {nearest_printer['printer_name']}\n"
+        f"📏 Distance: {nearest_printer['distance_km']:.2f} km\n\n"
+        "Proceeding with your order..."
+    )
+
+    # NOW PROCEED TO PAYMENT
+    cost = context.user_data.get("cost")
 
     # Generate print ID before payment
     print_id = str(uuid.uuid4())[:8]
@@ -216,27 +256,31 @@ async def ask_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Payment failed")
         return ConversationHandler.END
 
-    context.user_data["final_pdf"] = final_pdf
-
     await update.message.reply_text(
         f"💳 <b>Payment Required</b>\n\n"
         f"🆔 Job ID: {print_id}\n"
+        f"📍 Printer: {nearest_printer['printer_name']}\n"
         f"💰 Amount: ₹{cost}\n\n"
         f"👉 <a href='{payment_link}'>Pay Now</a>\n\n"
         f"After payment type <b>paid</b>",
         parse_mode="HTML"
     )
 
-    return ConversationHandler.END
+    return ASK_PAYMENT
 
-# ================= CHECK PAYMENT + QUEUE SYSTEM =================
-async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================= ASK SHOP SELECTION =================
+async def ask_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return ASK_PAYMENT
+
+# ================= ASK PAYMENT (FINAL) =================
+async def ask_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text.lower() != "paid":
-        return
+        await update.message.reply_text("❌ Type 'paid' to confirm payment")
+        return ASK_PAYMENT
 
     if not context.user_data.get("final_pdf"):
         await update.message.reply_text("❌ No pending order")
-        return
+        return ConversationHandler.END
 
     await update.message.reply_text("⏳ Processing print job...")
 
@@ -252,72 +296,38 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["print_id"] = print_id
     context.user_data["pdf"] = pdf
 
-    await update.message.reply_text(
-        f"✅ Payment confirmed!\n\n"
-        f"🆔 Print ID: {print_id}\n"
-        f"📍 Queue Position: {position}\n"
-        f"⏳ Wait Time: {wait_time} sec\n\n"
-        f"📍 Please share your location to select the nearest print shop."
-    )
+    selected_printer = context.user_data.get("selected_printer")
+    selected_choice = context.user_data.get("selected_choice")
+    selected_shop = context.user_data.get("selected_shop")
 
-    context.user_data["awaiting_location"] = True
+    # Update printer_id and status
+    if selected_printer and selected_printer.get("printer_id"):
+        update_printer_id(print_id, selected_printer["printer_id"])
+        selected_choice = selected_printer["printer_id"]
+    else:
+        update_printer_id(print_id, f"PRINTER_{selected_choice}")
+    
+    # Send to printer
+    printed = await asyncio.to_thread(send_to_printer, pdf)
+    
+    if printed:
+        update_job_status(print_id, "COMPLETED")
+        await update.message.reply_text(
+            f"✅ Payment confirmed & Job sent!\n\n"
+            f"🆔 Print ID: {print_id}\n"
+            f"📍 Queue Position: {position}\n"
+            f"⏳ Wait Time: {wait_time} sec\n"
+            f"🏪 Shop: {(selected_shop['name'] if selected_shop else (selected_printer['printer_name'] if selected_printer else 'Printer'))} (Printer: {selected_choice})\n\n"
+            f"Collect your prints from there."
+        )
+    else:
+        await update.message.reply_text("⚠️ Payment confirmed but printer error. Admin will contact you.")
 
-# ================= HANDLE LOCATION =================
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_location"):
-        return
-
-    location = update.message.location
-    if not location:
-        await update.message.reply_text("❌ Please share your location.")
-        return
-
-    user_lat = location.latitude
-    user_lon = location.longitude
-
-    nearest_locations, fallback = find_nearest_locations(user_lat, user_lon, top_n=4)
-    user_address = reverse_geocode_location(user_lat, user_lon)
-    message = get_location_message(nearest_locations, user_address=user_address, fallback=fallback)
-
-    await update.message.reply_text(message + "\n\nReply with the number (1-4) to select a shop.", parse_mode="HTML")
-    context.user_data["awaiting_location"] = False
-    context.user_data["awaiting_shop"] = True
-    context.user_data["locations"] = nearest_locations
-
-# ================= HANDLE SHOP SELECTION =================
-async def handle_shop_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        choice = int(text)
-        locations = context.user_data.get("locations", [])
-        if 1 <= choice <= len(locations):
-            selected_distance, selected_shop = locations[choice-1]
-            job_id = context.user_data.get("print_id")
-            pdf = context.user_data.get("pdf")
-            
-            # Update printer_id
-            update_printer_id(job_id, f"PRINTER_{choice}")
-            
-            # Send to printer
-            printed = await asyncio.to_thread(send_to_printer, pdf)
-            
-            if printed:
-                update_job_status(job_id, "COMPLETED")
-                await update.message.reply_text(f"✅ Print job sent to {selected_shop['name']} (Option {choice})!\n\nCollect your prints from there.")
-            else:
-                await update.message.reply_text("❌ Printer error")
-            
-            context.user_data["awaiting_shop"] = False
-        else:
-            await update.message.reply_text("❌ Invalid choice. Please select a number from 1 to 4.")
-    except ValueError:
-        await update.message.reply_text("❌ Please enter a valid number.")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # ================= FALLBACK =================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("awaiting_shop"):
-        await handle_shop_selection(update, context)
-        return
     await update.message.reply_text("📎 Send a file to start")
 
 # ================= EXPORT DATA =================
@@ -378,6 +388,9 @@ conv_handler = ConversationHandler(
         ASK_PAGES: [MessageHandler(filters.TEXT, ask_pages)],
         ASK_COPIES: [MessageHandler(filters.TEXT, ask_copies)],
         ASK_COLOR: [MessageHandler(filters.TEXT, ask_color)],
+        ASK_LOCATION: [MessageHandler(filters.LOCATION, ask_location)],
+        ASK_SHOP: [MessageHandler(filters.TEXT, ask_shop)],
+        ASK_PAYMENT: [MessageHandler(filters.TEXT, ask_payment)],
     },
     fallbacks=[]
 )
@@ -386,9 +399,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(conv_handler)
 app.add_handler(CommandHandler("export", export_data))
 app.add_handler(CommandHandler("retrieve", retrieve))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_payment))
-app.add_handler(MessageHandler(filters.LOCATION, handle_location))
-app.add_handler(MessageHandler(filters.TEXT, handle_text))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
 print("🚀 PrintX Bot Running with CUPS + Queue...")
 app.run_polling()

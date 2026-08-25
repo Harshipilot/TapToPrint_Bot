@@ -4,6 +4,8 @@ import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
 
+from Assets.database import get_db_connection
+
 load_dotenv()
 
 DB_NAME = "printx.db"
@@ -23,21 +25,21 @@ def log_payment_attempt(job_id, user_id, amount, link):
     Sets status to 'AWAITING_PAYMENT'.
     """
     try:
-        conn = sqlite3.connect(DB_NAME)
+        conn = get_db_connection(read_only=False)
         cursor = conn.cursor()
-        
+
         # Update the job status to show we are waiting for money
         cursor.execute(
-            "UPDATE print_jobs SET status = 'AWAITING_PAYMENT' WHERE job_id = ?", 
+            "UPDATE print_jobs SET status = 'AWAITING_PAYMENT' WHERE job_id = ?",
             (job_id,)
         )
-        
+
         # Log the attempt in the payments table with the link as reference
         cursor.execute('''
             INSERT INTO payments (job_id, user_id, amount, payment_status, paid_at, transaction_ref)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (job_id, user_id, amount, 'LINK_GENERATED', datetime.now(), f"LINK: {link}"))
-        
+
         conn.commit()
         conn.close()
     except Exception as e:

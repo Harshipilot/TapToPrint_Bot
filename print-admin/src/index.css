@@ -2,8 +2,62 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Keep your body styles if you like, but Tailwind needs the above */
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  background-color: #f8fafc;
+}
+
+html.dark {
+  background-color: #020817;
+}
+
 body {
   margin: 0;
-  font-family: sans-serif;
+  min-height: 100vh;
+  font-family: Inter, "Segoe UI", sans-serif;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+html.dark body {
+  background: #020817;
+  color: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgba(100, 116, 139, 0.45);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.7);
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.25);
 }

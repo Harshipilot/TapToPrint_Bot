@@ -5,46 +5,110 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+from Assets.database import get_active_printers
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 USER_AGENT = "PrintXBot/1.0 (contact: example@example.com)"
 
 
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """Calculate the great circle distance between two points on the earth in kilometers."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
+
+
+def find_nearest_printer(user_lat, user_lon):
+    """Return the single nearest active subscribed printer and its distance in kilometers."""
+    printers = get_active_printers()
+    if not printers:
+        return None
+
+    nearest_printer = None
+    nearest_distance = None
+
+    for printer in printers:
+        lat = printer.get("latitude")
+        lon = printer.get("longitude")
+        if lat is None or lon is None:
+            continue
+
+        distance_km = haversine_distance(float(user_lat), float(user_lon), float(lat), float(lon))
+        if nearest_distance is None or distance_km < nearest_distance:
+            nearest_distance = distance_km
+            nearest_printer = {
+                "printer_id": printer.get("printer_id"),
+                "printer_name": printer.get("printer_name") or printer.get("printer_id"),
+                "status": printer.get("status"),
+                "latitude": float(lat),
+                "longitude": float(lon),
+                "distance_km": float(distance_km),
+            }
+
+    return nearest_printer
+
+
+def find_nearest_locations(user_lat, user_lon, top_n=3):
+    """Backward-compatible function for the old menu, but not used by the bot."""
+    return [], False
+
+
+def get_location_message(locations_with_distances, user_address=None, fallback=False):
+    """Generate a message for the nearest locations."""
+    if user_address:
+        message = f"📍 <b>Your Location</b>: {user_address}\n\n"
+    else:
+        message = "📍 <b>Nearest Print Shops</b>\n\n"
+
+    for i, (distance, location) in enumerate(locations_with_distances, 1):
+        message += f"🏢 <b>{i}. {location['name']}</b>\n"
+        message += f"📌 {location['address']}\n"
+        message += f"📏 Distance: {distance:.2f} km\n\n"
+
+    if fallback:
+        message += "⚠️ Could not fetch live map data, showing generated nearby shops.\n\n"
+
+    message += "🕒 Business Hours: 9 AM - 9 PM\n"
+    message += "📞 Contact: +91-XXXXXXXXXX"
+    return message
+
+
 def generate_nearby_shops(user_lat, user_lon, num_shops=3, max_distance_km=10):
     """Generate fake print shops near the user's location."""
     shops = []
-    
-    # Shop name templates
+
     name_templates = [
         "Quick Print Center", "Digital Print Hub", "Express Copy Shop", "PrintPro Outlet",
         "City Print Services", "Fast Print Station", "Print Masters", "Copy & Print Plus",
         "Print Zone", "Document Solutions", "Print Palace", "Copy Corner"
     ]
-    
-    # Area names for addresses
+
     areas = [
-        "Main Market", "Central Plaza", "Shopping Complex", "Business District", 
+        "Main Market", "Central Plaza", "Shopping Complex", "Business District",
         "Commercial Area", "Market Square", "City Center", "Downtown", "Uptown",
         "Metro Station", "Mall Area", "Residential Complex"
     ]
-    
+
     for i in range(num_shops):
-        # Generate random distance and angle
-        distance = random.uniform(0.5, max_distance_km)  # 0.5 to 10 km
-        angle = random.uniform(0, 2 * math.pi)  # Random direction
-        
-        # Convert to lat/lon offset (approximate)
-        # 1 degree lat ≈ 111 km, 1 degree lon ≈ 111 km * cos(lat)
+        distance = random.uniform(0.5, max_distance_km)
+        angle = random.uniform(0, 2 * math.pi)
+
         lat_offset = (distance * math.sin(angle)) / 111.0
         lon_offset = (distance * math.cos(angle)) / (111.0 * math.cos(math.radians(user_lat)))
-        
+
         shop_lat = user_lat + lat_offset
         shop_lon = user_lon + lon_offset
-        
-        # Generate shop name and address
+
         name = f"{random.choice(name_templates)} {i+1}"
         address = f"{random.choice(areas)}, {random.choice(['Near', 'Opposite', 'Beside'])} {random.choice(['Mall', 'Hospital', 'School', 'Park', 'Station'])}"
-        
+
         shops.append({
             "lat": shop_lat,
             "lon": shop_lon,
@@ -52,20 +116,10 @@ def generate_nearby_shops(user_lat, user_lon, num_shops=3, max_distance_km=10):
             "address": address,
             "distance": distance
         })
-    
-    # Sort by distance
+
     shops.sort(key=lambda x: x["distance"])
     return shops
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """Calculate the great circle distance between two points on the earth."""
-    R = 6371  # Radius of the Earth in km
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    distance = R * c
-    return distance
 
 def reverse_geocode_location(lat, lon):
     """Return a human-readable address for the given coordinates."""
@@ -165,42 +219,3 @@ out center;
 
     shops.sort(key=lambda x: x["distance"])
     return shops[:top_n]
-
-
-def find_nearest_locations(user_lat, user_lon, top_n=3):
-    """Find the nearest real print shops to the user's coordinates."""
-    shops = search_nearby_print_shops(user_lat, user_lon, top_n=top_n)
-
-    fallback = False
-    if not shops:
-        shops = generate_nearby_shops(user_lat, user_lon, num_shops=top_n, max_distance_km=10)
-        fallback = True
-
-    locations_with_distances = []
-    for shop in shops:
-        locations_with_distances.append((shop["distance"], {
-            "name": shop["name"],
-            "address": shop["address"]
-        }))
-
-    return locations_with_distances, fallback
-
-
-def get_location_message(locations_with_distances, user_address=None, fallback=False):
-    """Generate a message for the nearest locations."""
-    if user_address:
-        message = f"📍 <b>Your Location</b>: {user_address}\n\n"
-    else:
-        message = "📍 <b>Nearest Print Shops</b>\n\n"
-
-    for i, (distance, location) in enumerate(locations_with_distances, 1):
-        message += f"🏢 <b>{i}. {location['name']}</b>\n"
-        message += f"📌 {location['address']}\n"
-        message += f"📏 Distance: {distance:.2f} km\n\n"
-
-    if fallback:
-        message += "⚠️ Could not fetch live map data, showing generated nearby shops.\n\n"
-
-    message += "🕒 Business Hours: 9 AM - 9 PM\n"
-    message += "📞 Contact: +91-XXXXXXXXXX"
-    return message

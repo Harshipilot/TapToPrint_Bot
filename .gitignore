@@ -10,7 +10,6 @@ venv/
 .env/
 
 # Environment variables
-.env
 *.env
 
 # =========================
@@ -27,7 +26,6 @@ Thumbs.db
 # =========================
 # IDE settings
 # =========================
-.vscode/
 .idea/
 
 # =========================
@@ -62,3 +60,8 @@ print-admin/.env
 print-admin/npm-debug.log*
 print-admin/yarn-debug.log*
 print-admin/yarn-error.log*
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat
+node_modules
